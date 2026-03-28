@@ -179,21 +179,23 @@ def run_gui():
             return "Invalid EPSG code(s). Cannot resolve transformation."
 
         lines = []
-        lines.append(f"SOURCE CRS (EPSG:{src_epsg})")
-        lines.append(f"  Name: {src_crs.name}")
-        lines.append(f"  Type: {'Geographic' if src_crs.is_geographic else 'Projected'}")
-        lines.append(f"  Datum: {src_crs.datum.name}")
-        lines.append(f"  Ellipsoid: {src_crs.ellipsoid.name}")
-        if not src_crs.is_geographic:
-            lines.append(f"  Projection: {src_crs.coordinate_operation.method_name}")
+
+        def append_crs_details(label, crs, epsg):
+            lines.append(f"{label} (EPSG:{epsg})")
+            lines.append(f"  Name: {crs.name}")
+            lines.append(f"  Type: {'Geographic' if crs.is_geographic else 'Projected'}")
+            lines.append(f"  Datum: {crs.datum.name}")
+            lines.append(f"  Ellipsoid: {crs.ellipsoid.name}")
+            if crs.coordinate_operation:
+                lines.append(f"  Projection: {crs.coordinate_operation.method_name}")
+                if crs.coordinate_operation.params:
+                    lines.append("  Parameters:")
+                    for p in crs.coordinate_operation.params:
+                        lines.append(f"    {p.name}: {p.value} {p.unit_name}")
+
+        append_crs_details("SOURCE CRS", src_crs, src_epsg)
         lines.append("")
-        lines.append(f"TARGET CRS (EPSG:{dst_epsg})")
-        lines.append(f"  Name: {dst_crs.name}")
-        lines.append(f"  Type: {'Geographic' if dst_crs.is_geographic else 'Projected'}")
-        lines.append(f"  Datum: {dst_crs.datum.name}")
-        lines.append(f"  Ellipsoid: {dst_crs.ellipsoid.name}")
-        if not dst_crs.is_geographic:
-            lines.append(f"  Projection: {dst_crs.coordinate_operation.method_name}")
+        append_crs_details("TARGET CRS", dst_crs, dst_epsg)
         lines.append("")
 
         # Transformation pipeline
@@ -201,9 +203,12 @@ def run_gui():
             transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
             lines.append("TRANSFORMATION PIPELINE")
             for op in transformer.operations:
-                lines.append(f"  - {op.name}")
+                lines.append(f"  \u2192 {op.name}")
                 if hasattr(op, 'method_name') and op.method_name:
                     lines.append(f"    Method: {op.method_name}")
+                if hasattr(op, 'params') and op.params:
+                    for p in op.params:
+                        lines.append(f"    {p.name}: {p.value} {p.unit_name}")
                 if hasattr(op, 'accuracy') and op.accuracy is not None and op.accuracy >= 0:
                     lines.append(f"    Accuracy: {op.accuracy} m")
         except AttributeError:
@@ -414,7 +419,7 @@ def run_gui():
     frm_params = ttk.LabelFrame(frm_gcp_row, text="Transformation Parameters", padding=6)
     frm_params.pack(side="right", fill="both", padx=(6, 0))
 
-    params_text = tk.Text(frm_params, width=45, height=14, state="disabled",
+    params_text = tk.Text(frm_params, width=48, height=16, state="disabled",
                           font=("Consolas", 9), wrap="word", relief="flat",
                           background="#f5f5f5")
     params_text.pack(fill="both", expand=True)
