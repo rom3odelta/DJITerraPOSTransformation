@@ -497,14 +497,17 @@ def run_gui():
 
     def parse_coordinates(text):
         """Parse pasted coordinate text. Accepts lines of X Y [Z] or X,Y[,Z].
+        Handles Excel paste (tab-separated, \\r\\n line endings, null bytes).
         Returns list of tuples: (x, y) or (x, y, z)."""
+        # Clean up Excel/Windows clipboard artifacts
+        text = text.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
         coords = []
         for line in text.strip().splitlines():
             line = line.strip()
             if not line:
                 continue
-            # Split on comma, whitespace, or tab
-            parts = line.replace(",", " ").split()
+            # Split on comma, tab, or whitespace
+            parts = line.replace(",", " ").replace("\t", " ").split()
             if len(parts) < 2:
                 continue
             try:
@@ -655,6 +658,21 @@ def run_gui():
 
     quick_input_text = tk.Text(quick_input_frame, width=60, height=6, font=("Consolas", 10))
     quick_input_text.pack(side="left", fill="x", expand=True)
+
+    def on_paste(event):
+        """Handle Ctrl+V paste — clean clipboard data (Excel uses \\r\\n and trailing nulls)."""
+        try:
+            clipboard = root.clipboard_get()
+        except tk.TclError:
+            return
+        # Clean: strip null bytes and normalize line endings
+        clipboard = clipboard.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
+        # Insert cleaned text at cursor
+        quick_input_text.insert("insert", clipboard)
+        return "break"  # prevent default paste
+
+    quick_input_text.bind("<Control-v>", on_paste)
+    quick_input_text.bind("<Control-V>", on_paste)
 
     quick_input_sb = ttk.Scrollbar(quick_input_frame, orient="vertical", command=quick_input_text.yview)
     quick_input_text.configure(yscrollcommand=quick_input_sb.set)
