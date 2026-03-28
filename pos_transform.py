@@ -491,7 +491,108 @@ def run_gui():
     ttk.Button(frm_actions, text="Transform", command=on_transform).pack(side="left", padx=8)
     ttk.Button(frm_actions, text="Export CSV...", command=on_export).pack(side="left", padx=8)
 
-    # ── Row 4: Notebook with Input Preview / Output ──────────────────────
+    # ── Quick Transform helpers ──────────────────────────────────────────
+
+    quick_result_rows = []  # list of tuples for quick transform output
+
+    def parse_coordinates(text):
+        """Parse pasted coordinate text. Accepts lines of X Y [Z] or X,Y[,Z].
+        Returns list of tuples: (x, y) or (x, y, z)."""
+        coords = []
+        for line in text.strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # Split on comma, whitespace, or tab
+            parts = line.replace(",", " ").split()
+            if len(parts) < 2:
+                continue
+            try:
+                vals = [float(p) for p in parts]
+                coords.append(tuple(vals))
+            except ValueError:
+                continue
+        return coords
+
+    def on_quick_transform():
+        nonlocal quick_result_rows
+        src_epsg = get_epsg(src_combo)
+        dst_epsg = get_epsg(dst_combo)
+        if not src_epsg or not dst_epsg:
+            messagebox.showerror("Error", "Please select source and target CRS.")
+            return
+        text = quick_input_text.get("1.0", "end")
+        coords = parse_coordinates(text)
+        if not coords:
+            messagebox.showerror("Error", "No valid coordinates found.\nPaste lines of: X Y [Z]  or  X,Y[,Z]")
+            return
+        try:
+            transformer = build_transformer(src_epsg, dst_epsg)
+        except Exception as e:
+            messagebox.showerror("Error", f"Transformer failed:\n{e}")
+            return
+
+        quick_result_rows = []
+        for item in tree_quick.get_children():
+            tree_quick.delete(item)
+
+        src_geo = is_geographic(src_epsg)
+        for i, c in enumerate(coords, 1):
+            x_in, y_in = c[0], c[1]
+            z_in = c[2] if len(c) > 2 else None
+            # For geographic CRS input, user pastes Lat,Lon → need (lon,lat) for always_xy
+            if src_geo:
+                x_out, y_out = transform_point(transformer, y_in, x_in)
+            else:
+                x_out, y_out = transformer.transform(x_in, y_in)
+            row = (i, f"{x_in}", f"{y_in}",
+                   f"{z_in}" if z_in is not None else "",
+                   f"{x_out:.6f}", f"{y_out:.6f}",
+                   f"{z_in}" if z_in is not None else "")
+            quick_result_rows.append(row)
+            tree_quick.insert("", "end", values=row)
+
+        status_var.set(f"Quick Transform: {len(quick_result_rows)} points transformed.")
+        notebook.select(frm_tab_quick)
+
+    def on_quick_copy():
+        if not quick_result_rows:
+            return
+        lines = []
+        for row in quick_result_rows:
+            # Copy: X_out, Y_out, Z
+            parts = [row[4], row[5]]
+            if row[6]:
+                parts.append(row[6])
+            lines.append("\t".join(parts))
+        root.clipboard_clear()
+        root.clipboard_append("\n".join(lines))
+        status_var.set(f"Copied {len(quick_result_rows)} transformed points to clipboard.")
+
+    def on_quick_export():
+        if not quick_result_rows:
+            messagebox.showerror("Error", "No transformed data to export.")
+            return
+        filepath = filedialog.asksaveasfilename(
+            title="Export Quick Transform Results",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")],
+            initialfile="quick_transform.csv"
+        )
+        if not filepath:
+            return
+        try:
+            with open(filepath, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(["#", "Src_X", "Src_Y", "Src_Z", "Dst_X", "Dst_Y", "Dst_Z"])
+                for row in quick_result_rows:
+                    writer.writerow(row)
+            messagebox.showinfo("Exported", f"Saved to:\n{filepath}")
+            status_var.set(f"Quick Transform exported to {filepath}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Export failed:\n{e}")
+
+    # ── Row 4: Notebook with Input Preview / Output / Quick Transform ────
     notebook = ttk.Notebook(root)
     notebook.pack(fill="both", expand=True, padx=8, pady=(4, 4))
 
@@ -536,6 +637,54 @@ def run_gui():
     sb_output_x.grid(row=1, column=0, sticky="ew")
     frm_tab_output.rowconfigure(0, weight=1)
     frm_tab_output.columnconfigure(0, weight=1)
+
+    # Quick Transform tab
+    frm_tab_quick = ttk.Frame(notebook)
+    notebook.add(frm_tab_quick, text="Quick Transform")
+
+    # Top pane: input text + buttons
+    frm_quick_top = ttk.Frame(frm_tab_quick)
+    frm_quick_top.pack(fill="x", padx=4, pady=4)
+
+    ttk.Label(frm_quick_top, text="Paste coordinates (one per line: X Y [Z]  or  X,Y[,Z]):").pack(
+        anchor="w", padx=4
+    )
+
+    quick_input_frame = ttk.Frame(frm_quick_top)
+    quick_input_frame.pack(fill="x", padx=4, pady=2)
+
+    quick_input_text = tk.Text(quick_input_frame, width=60, height=6, font=("Consolas", 10))
+    quick_input_text.pack(side="left", fill="x", expand=True)
+
+    quick_input_sb = ttk.Scrollbar(quick_input_frame, orient="vertical", command=quick_input_text.yview)
+    quick_input_text.configure(yscrollcommand=quick_input_sb.set)
+    quick_input_sb.pack(side="right", fill="y")
+
+    frm_quick_btns = ttk.Frame(frm_quick_top)
+    frm_quick_btns.pack(fill="x", padx=4, pady=4)
+
+    ttk.Button(frm_quick_btns, text="Transform", command=on_quick_transform).pack(side="left", padx=4)
+    ttk.Button(frm_quick_btns, text="Copy Results", command=on_quick_copy).pack(side="left", padx=4)
+    ttk.Button(frm_quick_btns, text="Export CSV...", command=on_quick_export).pack(side="left", padx=4)
+
+    ttk.Label(frm_quick_btns,
+              text="Uses the Source/Target CRS selected above. For geographic CRS, paste Lat Lon.",
+              foreground="#666666").pack(side="left", padx=12)
+
+    # Bottom pane: results table
+    quick_cols = ("#", "Src_X", "Src_Y", "Src_Z", "Dst_X", "Dst_Y", "Dst_Z")
+    tree_quick = ttk.Treeview(frm_tab_quick, columns=quick_cols, show="headings", height=10)
+    for col in quick_cols:
+        tree_quick.heading(col, text=col)
+        tree_quick.column(col, width=130, anchor="center")
+    tree_quick.column("#", width=50, anchor="center")
+
+    sb_quick_y = ttk.Scrollbar(frm_tab_quick, orient="vertical", command=tree_quick.yview)
+    sb_quick_x = ttk.Scrollbar(frm_tab_quick, orient="horizontal", command=tree_quick.xview)
+    tree_quick.configure(yscrollcommand=sb_quick_y.set, xscrollcommand=sb_quick_x.set)
+
+    tree_quick.pack(fill="both", expand=True, side="left", padx=(4, 0), pady=(0, 4))
+    sb_quick_y.pack(fill="y", side="right", pady=(0, 4))
 
     # ── Status Bar ───────────────────────────────────────────────────────
     ttk.Label(root, textvariable=status_var, relief="sunken", anchor="w").pack(

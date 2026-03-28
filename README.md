@@ -1,14 +1,24 @@
-# DJI Terra POS Transformation
+# DJI Terra POS Transformation & Generic Coordinate Transformer
 
-Transform Position and Orientation System (POS) data from DJI Terra aerial imagery so that the generated 2D orthophotos and 3D models are in the target coordinate system.
+Transform Position and Orientation System (POS) data from DJI Terra aerial imagery — or any coordinates — from one coordinate system to another.
 
 ## What It Does
 
+This tool works in two modes:
+
+### POS Transform Mode
 DJI Terra exports a POS CSV with each photo's geographic position (WGS 84 latitude/longitude) and orientation. This tool:
 
 1. **Transforms coordinates** from a source CRS (e.g. WGS 84) to a target projected CRS (e.g. PRS 92 Zone 1–5) using [pyproj](https://pyproj4.github.io/pyproj/).
 2. **Applies a GCP delta shift** — given a Ground Control Point with known source and target coordinates, computes the translation offset (dEasting, dNorthing, dElevation) and applies it to every photo position.
 3. **Exports a transformed POS CSV** ready to be imported back into DJI Terra or other photogrammetry software.
+
+### Quick Transform Mode
+A generic coordinate transformer for any source/target EPSG pair:
+
+1. **Paste coordinates** directly into the text area — one point per line (Lat Lon, X Y, or X Y Z).
+2. **Transform** — instantly converts all points using the selected CRS pair.
+3. **Copy** results to clipboard or **Export** to CSV.
 
 ## Input Format
 
@@ -91,11 +101,26 @@ The executable will be created at `dist/DJITerraPOSTransformation.exe`.
 
 ## Usage
 
+### POS Transform
+
 1. **Browse** — Select your DJI Terra POS CSV file.
 2. **Select CRS** — Choose source (e.g. WGS 84) and target (e.g. PRS 92 Zone 3) from the dropdown presets, or type any EPSG code directly.
 3. **Enter GCP** *(optional)* — Fill in the GCP Source and Target coordinates, then click **Compute Delta** to see the offset values.
 4. **Transform** — Click to project all photo positions and apply the delta shift.
 5. **Export CSV** — Save the transformed POS file.
+
+### Quick Transform
+
+1. **Select CRS** — Set your source and target CRS using the dropdowns or type any EPSG code.
+2. **Switch to the Quick Transform tab** in the bottom panel.
+3. **Paste coordinates** into the text area — one point per line:
+   - `14.6594 121.0099` (Lat Lon for geographic CRS)
+   - `500000.00 1600000.00` (Easting Northing for projected CRS)
+   - `14.6594 121.0099 85.2` (with elevation)
+   - Comma-separated: `14.6594,121.0099,85.2`
+4. **Transform** — Results appear in the table below.
+5. **Copy Results** — Copies transformed coordinates to clipboard (tab-separated).
+6. **Export CSV** — Saves full input→output table as CSV.
 
 ## Project Structure
 
