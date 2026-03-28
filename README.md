@@ -78,6 +78,17 @@ python pos_transform.py
 
 This opens the Tkinter GUI.
 
+### Build Executable
+
+To create a standalone `.exe` (no Python installation required on the target machine):
+
+```bash
+pip install pyinstaller
+python build.py
+```
+
+The executable will be created at `dist/DJITerraPOSTransformation.exe`.
+
 ## Usage
 
 1. **Browse** — Select your DJI Terra POS CSV file.
@@ -90,6 +101,7 @@ This opens the Tkinter GUI.
 
 ```
 ├── pos_transform.py    # Main application (GUI + transformation engine)
+├── build.py            # Build script to create standalone .exe
 ├── sample_pos.csv      # Sample DJI Terra POS input file
 ├── test_transform.py   # Test script for verifying transformations
 ├── requirements.txt    # Python dependencies
