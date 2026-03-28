@@ -596,15 +596,23 @@ def run_gui():
             messagebox.showerror("Error", f"Export failed:\n{e}")
 
     # ── Row 4: Notebook with Input Preview / Output / Quick Transform ────
-    notebook = ttk.Notebook(root)
+    style = ttk.Style()
+    style.configure("Main.TNotebook.Tab", font=("Segoe UI", 11, "bold"), padding=[14, 6])
+
+    notebook = ttk.Notebook(root, style="Main.TNotebook")
     notebook.pack(fill="both", expand=True, padx=8, pady=(4, 4))
 
     # Input preview tab
     frm_tab_input = ttk.Frame(notebook)
-    notebook.add(frm_tab_input, text="Input Preview")
+    notebook.add(frm_tab_input, text="  \U0001F4C4  Input Preview  ")
+
+    ttk.Label(frm_tab_input,
+              text="Browse a DJI Terra POS CSV above. The loaded photo positions are shown here.",
+              foreground="#555555", font=("Segoe UI", 9)).grid(
+        row=0, column=0, sticky="w", padx=6, pady=(4, 2))
 
     input_cols = ("Photo Name", "Latitude", "Longitude", "Altitude", "Yaw", "Pitch", "Roll")
-    tree_input = ttk.Treeview(frm_tab_input, columns=input_cols, show="headings", height=12)
+    tree_input = ttk.Treeview(frm_tab_input, columns=input_cols, show="headings", height=11)
     for col in input_cols:
         tree_input.heading(col, text=col)
         tree_input.column(col, width=110, anchor="center")
@@ -614,18 +622,23 @@ def run_gui():
     sb_input_x = ttk.Scrollbar(frm_tab_input, orient="horizontal", command=tree_input.xview)
     tree_input.configure(yscrollcommand=sb_input_y.set, xscrollcommand=sb_input_x.set)
 
-    tree_input.grid(row=0, column=0, sticky="nsew")
-    sb_input_y.grid(row=0, column=1, sticky="ns")
-    sb_input_x.grid(row=1, column=0, sticky="ew")
-    frm_tab_input.rowconfigure(0, weight=1)
+    tree_input.grid(row=1, column=0, sticky="nsew")
+    sb_input_y.grid(row=1, column=1, sticky="ns")
+    sb_input_x.grid(row=2, column=0, sticky="ew")
+    frm_tab_input.rowconfigure(1, weight=1)
     frm_tab_input.columnconfigure(0, weight=1)
 
     # Output tab
     frm_tab_output = ttk.Frame(notebook)
-    notebook.add(frm_tab_output, text="Transformed Output")
+    notebook.add(frm_tab_output, text="  \U0001F504  Transformed Output  ")
+
+    ttk.Label(frm_tab_output,
+              text="Click Transform to project all photo positions. Use Export CSV to save results.",
+              foreground="#555555", font=("Segoe UI", 9)).grid(
+        row=0, column=0, sticky="w", padx=6, pady=(4, 2))
 
     output_cols = tuple(POS_OUTPUT_COLUMNS)
-    tree_output = ttk.Treeview(frm_tab_output, columns=output_cols, show="headings", height=12)
+    tree_output = ttk.Treeview(frm_tab_output, columns=output_cols, show="headings", height=11)
     for col in output_cols:
         tree_output.heading(col, text=col)
         tree_output.column(col, width=110, anchor="center")
@@ -635,23 +648,23 @@ def run_gui():
     sb_output_x = ttk.Scrollbar(frm_tab_output, orient="horizontal", command=tree_output.xview)
     tree_output.configure(yscrollcommand=sb_output_y.set, xscrollcommand=sb_output_x.set)
 
-    tree_output.grid(row=0, column=0, sticky="nsew")
-    sb_output_y.grid(row=0, column=1, sticky="ns")
-    sb_output_x.grid(row=1, column=0, sticky="ew")
-    frm_tab_output.rowconfigure(0, weight=1)
+    tree_output.grid(row=1, column=0, sticky="nsew")
+    sb_output_y.grid(row=1, column=1, sticky="ns")
+    sb_output_x.grid(row=2, column=0, sticky="ew")
+    frm_tab_output.rowconfigure(1, weight=1)
     frm_tab_output.columnconfigure(0, weight=1)
 
     # Quick Transform tab
     frm_tab_quick = ttk.Frame(notebook)
-    notebook.add(frm_tab_quick, text="Quick Transform")
+    notebook.add(frm_tab_quick, text="  \u26A1  Quick Transform  ")
 
     # Top pane: input text + buttons
     frm_quick_top = ttk.Frame(frm_tab_quick)
     frm_quick_top.pack(fill="x", padx=4, pady=4)
 
-    ttk.Label(frm_quick_top, text="Paste coordinates (one per line: X Y [Z]  or  X,Y[,Z]):").pack(
-        anchor="w", padx=4
-    )
+    ttk.Label(frm_quick_top,
+              text="Paste coordinates below (one point per line). Accepts: Lat Lon  |  X Y  |  X Y Z  |  comma or tab separated.  Supports Excel paste.",
+              foreground="#555555", font=("Segoe UI", 9)).pack(anchor="w", padx=4, pady=(0, 4))
 
     quick_input_frame = ttk.Frame(frm_quick_top)
     quick_input_frame.pack(fill="x", padx=4, pady=2)
@@ -686,8 +699,8 @@ def run_gui():
     ttk.Button(frm_quick_btns, text="Export CSV...", command=on_quick_export).pack(side="left", padx=4)
 
     ttk.Label(frm_quick_btns,
-              text="Uses the Source/Target CRS selected above. For geographic CRS, paste Lat Lon.",
-              foreground="#666666").pack(side="left", padx=12)
+              text="\u2190 Uses the Source / Target CRS selected above",
+              foreground="#888888", font=("Segoe UI", 9)).pack(side="left", padx=12)
 
     # Bottom pane: results table
     quick_cols = ("#", "Src_X", "Src_Y", "Src_Z", "Dst_X", "Dst_Y", "Dst_Z")
