@@ -6,6 +6,7 @@ from tkinter import ttk
 from pyproj import Transformer, CRS
 
 # ── CRS Presets ──────────────────────────────────────────────────────────────
+# Friendly name → EPSG code. Users can also type any EPSG code directly.
 CRS_PRESETS = {
     "WGS 84 (EPSG:4326)": "4326",
     "PRS 92 Zone 1 (EPSG:3121)": "3121",
@@ -13,7 +14,6 @@ CRS_PRESETS = {
     "PRS 92 Zone 3 (EPSG:3123)": "3123",
     "PRS 92 Zone 4 (EPSG:3124)": "3124",
     "PRS 92 Zone 5 (EPSG:3125)": "3125",
-    "Custom EPSG...": "custom",
 }
 
 POS_INPUT_COLUMNS = [
@@ -132,23 +132,14 @@ def run_gui():
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
-    def get_epsg(combo, entry):
-        """Resolve EPSG code from combo selection or custom entry."""
-        sel = combo.get()
-        code = CRS_PRESETS.get(sel)
-        if code == "custom":
-            return entry.get().strip()
-        return code
-
-    def on_crs_combo_change(combo, entry):
-        """Show/hide custom EPSG entry based on combo selection."""
-        sel = combo.get()
-        if CRS_PRESETS.get(sel) == "custom":
-            entry.config(state="normal")
-            entry.focus_set()
-        else:
-            entry.delete(0, tk.END)
-            entry.config(state="disabled")
+    def get_epsg(combo):
+        """Resolve EPSG code from combo value (preset name or raw EPSG code)."""
+        val = combo.get().strip()
+        # If it matches a preset name, return the mapped EPSG code
+        if val in CRS_PRESETS:
+            return CRS_PRESETS[val]
+        # Otherwise treat the raw value as an EPSG code
+        return val
 
     # ── File Browse ──────────────────────────────────────────────────────
 
@@ -185,8 +176,8 @@ def run_gui():
     # ── Compute Delta ────────────────────────────────────────────────────
 
     def on_compute_delta():
-        src_epsg = get_epsg(src_combo, src_custom_entry)
-        dst_epsg = get_epsg(dst_combo, dst_custom_entry)
+        src_epsg = get_epsg(src_combo)
+        dst_epsg = get_epsg(dst_combo)
         if not src_epsg or not dst_epsg:
             messagebox.showerror("Error", "Please select source and target CRS.")
             return
@@ -223,8 +214,8 @@ def run_gui():
         if not pos_rows:
             messagebox.showerror("Error", "No POS data loaded. Browse for a CSV first.")
             return
-        src_epsg = get_epsg(src_combo, src_custom_entry)
-        dst_epsg = get_epsg(dst_combo, dst_custom_entry)
+        src_epsg = get_epsg(src_combo)
+        dst_epsg = get_epsg(dst_combo)
         if not src_epsg or not dst_epsg:
             messagebox.showerror("Error", "Please select source and target CRS.")
             return
@@ -312,24 +303,21 @@ def run_gui():
 
     # Source CRS
     ttk.Label(frm_crs, text="Source CRS:").grid(row=0, column=0, sticky="e", **PAD)
-    src_combo = ttk.Combobox(frm_crs, values=preset_names, state="readonly", width=30)
+    src_combo = ttk.Combobox(frm_crs, values=preset_names, width=30)
     src_combo.set("WGS 84 (EPSG:4326)")
     src_combo.grid(row=0, column=1, sticky="w", **PAD)
-    ttk.Label(frm_crs, text="Custom EPSG:").grid(row=0, column=2, sticky="e", **PAD)
-    src_custom_entry = ttk.Entry(frm_crs, width=10, state="disabled")
-    src_custom_entry.grid(row=0, column=3, sticky="w", **PAD)
+    ttk.Label(frm_crs, text="(select preset or type any EPSG code)").grid(
+        row=0, column=2, columnspan=2, sticky="w", **PAD
+    )
 
     # Target CRS
     ttk.Label(frm_crs, text="Target CRS:").grid(row=1, column=0, sticky="e", **PAD)
-    dst_combo = ttk.Combobox(frm_crs, values=preset_names, state="readonly", width=30)
+    dst_combo = ttk.Combobox(frm_crs, values=preset_names, width=30)
     dst_combo.set("PRS 92 Zone 3 (EPSG:3123)")
     dst_combo.grid(row=1, column=1, sticky="w", **PAD)
-    ttk.Label(frm_crs, text="Custom EPSG:").grid(row=1, column=2, sticky="e", **PAD)
-    dst_custom_entry = ttk.Entry(frm_crs, width=10, state="disabled")
-    dst_custom_entry.grid(row=1, column=3, sticky="w", **PAD)
-
-    src_combo.bind("<<ComboboxSelected>>", lambda e: on_crs_combo_change(src_combo, src_custom_entry))
-    dst_combo.bind("<<ComboboxSelected>>", lambda e: on_crs_combo_change(dst_combo, dst_custom_entry))
+    ttk.Label(frm_crs, text="(select preset or type any EPSG code)").grid(
+        row=1, column=2, columnspan=2, sticky="w", **PAD
+    )
 
     # ── Row 2: GCP Delta ─────────────────────────────────────────────────
     frm_gcp = ttk.LabelFrame(root, text="Ground Control Point (GCP) Delta Translation", padding=6)

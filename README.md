@@ -30,6 +30,10 @@ DJI_0001.JPG,500932.9650,1621298.6511,87.2000,-45.3,-90.0,0.5,1.5,2.0
 
 ## Supported Coordinate Systems
 
+Any coordinate system with an EPSG code is supported. Select from the built-in presets or type any EPSG code directly into the combo box.
+
+### Built-in Presets
+
 | CRS | EPSG | Type |
 |-----|------|------|
 | WGS 84 | 4326 | Geographic (Lat/Lon) |
@@ -38,7 +42,10 @@ DJI_0001.JPG,500932.9650,1621298.6511,87.2000,-45.3,-90.0,0.5,1.5,2.0
 | PRS 92 Zone 3 | 3123 | Projected (meters) |
 | PRS 92 Zone 4 | 3124 | Projected (meters) |
 | PRS 92 Zone 5 | 3125 | Projected (meters) |
-| Custom | Any EPSG | User-defined |
+
+**Default:** WGS 84 (4326) → PRS 92 Zone 3 (3123)
+
+You can type any valid EPSG code (e.g. `32651` for UTM Zone 51N) directly into the Source or Target CRS field.
 
 ## GCP Delta Translation
 
@@ -74,7 +81,7 @@ This opens the Tkinter GUI.
 ## Usage
 
 1. **Browse** — Select your DJI Terra POS CSV file.
-2. **Select CRS** — Choose source (e.g. WGS 84) and target (e.g. PRS 92 Zone 3) from the dropdowns. Select "Custom EPSG..." to enter any EPSG code.
+2. **Select CRS** — Choose source (e.g. WGS 84) and target (e.g. PRS 92 Zone 3) from the dropdown presets, or type any EPSG code directly.
 3. **Enter GCP** *(optional)* — Fill in the GCP Source and Target coordinates, then click **Compute Delta** to see the offset values.
 4. **Transform** — Click to project all photo positions and apply the delta shift.
 5. **Export CSV** — Save the transformed POS file.
