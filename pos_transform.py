@@ -160,6 +160,60 @@ def run_gui():
             label_var.set(f"\u2714 {name} (EPSG:{epsg})")
         else:
             label_var.set(f"\u2716 Unknown EPSG code: {epsg}")
+        # Auto-refresh transformation parameters whenever CRS changes
+        update_transform_params()
+
+    def get_transform_info():
+        """Build a text summary of the transformation parameters from pyproj."""
+        try:
+            src_epsg = get_epsg(src_combo)
+            dst_epsg = get_epsg(dst_combo)
+        except Exception:
+            return "Select source and target CRS to see parameters."
+        if not src_epsg or not dst_epsg:
+            return "Select source and target CRS to see parameters."
+        try:
+            src_crs = CRS.from_epsg(int(src_epsg))
+            dst_crs = CRS.from_epsg(int(dst_epsg))
+        except Exception:
+            return "Invalid EPSG code(s). Cannot resolve transformation."
+
+        lines = []
+        lines.append(f"SOURCE CRS (EPSG:{src_epsg})")
+        lines.append(f"  Name: {src_crs.name}")
+        lines.append(f"  Type: {'Geographic' if src_crs.is_geographic else 'Projected'}")
+        lines.append(f"  Datum: {src_crs.datum.name}")
+        lines.append(f"  Ellipsoid: {src_crs.ellipsoid.name}")
+        if not src_crs.is_geographic:
+            lines.append(f"  Projection: {src_crs.coordinate_operation.method_name}")
+        lines.append("")
+        lines.append(f"TARGET CRS (EPSG:{dst_epsg})")
+        lines.append(f"  Name: {dst_crs.name}")
+        lines.append(f"  Type: {'Geographic' if dst_crs.is_geographic else 'Projected'}")
+        lines.append(f"  Datum: {dst_crs.datum.name}")
+        lines.append(f"  Ellipsoid: {dst_crs.ellipsoid.name}")
+        if not dst_crs.is_geographic:
+            lines.append(f"  Projection: {dst_crs.coordinate_operation.method_name}")
+        lines.append("")
+
+        # Transformation pipeline
+        try:
+            transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+            lines.append("TRANSFORMATION PIPELINE")
+            for op in transformer.operations:
+                lines.append(f"  - {op.name}")
+                if hasattr(op, 'method_name') and op.method_name:
+                    lines.append(f"    Method: {op.method_name}")
+                if hasattr(op, 'accuracy') and op.accuracy is not None and op.accuracy >= 0:
+                    lines.append(f"    Accuracy: {op.accuracy} m")
+        except AttributeError:
+            # transformer.operations not available in older pyproj
+            lines.append("TRANSFORMATION")
+            lines.append(f"  {src_crs.name} \u2192 {dst_crs.name}")
+        except Exception as e:
+            lines.append(f"  (Could not resolve pipeline: {e})")
+
+        return "\n".join(lines)
 
     # ── File Browse ──────────────────────────────────────────────────────
 
@@ -348,9 +402,30 @@ def run_gui():
     dst_combo.bind("<FocusOut>", lambda e: on_crs_input(dst_combo, dst_crs_name_var))
     dst_combo.bind("<Return>", lambda e: on_crs_input(dst_combo, dst_crs_name_var))
 
-    # ── Row 2: GCP Delta ─────────────────────────────────────────────────
-    frm_gcp = ttk.LabelFrame(root, text="Ground Control Point (GCP) Delta Translation", padding=6)
-    frm_gcp.pack(fill="x", padx=8, pady=4)
+    # ── Row 2: GCP Delta + Transformation Parameters (side by side) ────
+    frm_gcp_row = ttk.Frame(root)
+    frm_gcp_row.pack(fill="x", padx=8, pady=4)
+
+    # Left: GCP Delta
+    frm_gcp = ttk.LabelFrame(frm_gcp_row, text="Ground Control Point (GCP) Delta Translation", padding=6)
+    frm_gcp.pack(side="left", fill="both", expand=True)
+
+    # Right: Transformation Parameters
+    frm_params = ttk.LabelFrame(frm_gcp_row, text="Transformation Parameters", padding=6)
+    frm_params.pack(side="right", fill="both", padx=(6, 0))
+
+    params_text = tk.Text(frm_params, width=45, height=14, state="disabled",
+                          font=("Consolas", 9), wrap="word", relief="flat",
+                          background="#f5f5f5")
+    params_text.pack(fill="both", expand=True)
+
+    def update_transform_params():
+        """Refresh the transformation parameters display."""
+        info = get_transform_info()
+        params_text.config(state="normal")
+        params_text.delete("1.0", "end")
+        params_text.insert("1.0", info)
+        params_text.config(state="disabled")
 
     # GCP Source
     ttk.Label(frm_gcp, text="GCP Source (from POS / transformed):").grid(
@@ -454,6 +529,9 @@ def run_gui():
     ttk.Label(root, textvariable=status_var, relief="sunken", anchor="w").pack(
         fill="x", side="bottom", padx=8, pady=(0, 4)
     )
+
+    # Populate transformation parameters on startup
+    update_transform_params()
 
     root.mainloop()
 
