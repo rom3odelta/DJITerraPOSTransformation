@@ -563,7 +563,7 @@ def run_gui():
             return
         lines = []
         for row in quick_result_rows:
-            # Copy: X_out, Y_out, Z
+            # Copy: Easting, Northing, Elevation
             parts = [row[4], row[5]]
             if row[6]:
                 parts.append(row[6])
@@ -587,7 +587,7 @@ def run_gui():
         try:
             with open(filepath, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
-                writer.writerow(["#", "Src_X", "Src_Y", "Src_Z", "Dst_X", "Dst_Y", "Dst_Z"])
+                writer.writerow(["#", "Src_1", "Src_2", "Src_Z", "Easting", "Northing", "Elevation"])
                 for row in quick_result_rows:
                     writer.writerow(row)
             messagebox.showinfo("Exported", f"Saved to:\n{filepath}")
@@ -703,7 +703,7 @@ def run_gui():
               foreground="#888888", font=("Segoe UI", 9)).pack(side="left", padx=12)
 
     # Bottom pane: results table
-    quick_cols = ("#", "Src_X", "Src_Y", "Src_Z", "Dst_X", "Dst_Y", "Dst_Z")
+    quick_cols = ("#", "Src_1", "Src_2", "Src_Z", "Easting", "Northing", "Elevation")
     tree_quick = ttk.Treeview(frm_tab_quick, columns=quick_cols, show="headings", height=10)
     for col in quick_cols:
         tree_quick.heading(col, text=col)
