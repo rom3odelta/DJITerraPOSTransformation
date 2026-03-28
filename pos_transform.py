@@ -179,6 +179,11 @@ def run_gui():
             return "Invalid EPSG code(s). Cannot resolve transformation."
 
         lines = []
+        friendly = {
+            "Longitude of natural origin": "Central Meridian",
+            "Latitude of natural origin": "Latitude of Origin",
+            "Scale factor at natural origin": "Scale Factor",
+        }
 
         def append_crs_details(label, crs, epsg):
             lines.append(f"{label} (EPSG:{epsg})")
@@ -191,7 +196,8 @@ def run_gui():
                 if crs.coordinate_operation.params:
                     lines.append("  Parameters:")
                     for p in crs.coordinate_operation.params:
-                        lines.append(f"    {p.name}: {p.value} {p.unit_name}")
+                        name = friendly.get(p.name, p.name)
+                        lines.append(f"    {name}: {p.value} {p.unit_name}")
 
         append_crs_details("SOURCE CRS", src_crs, src_epsg)
         lines.append("")
@@ -208,7 +214,8 @@ def run_gui():
                     lines.append(f"    Method: {op.method_name}")
                 if hasattr(op, 'params') and op.params:
                     for p in op.params:
-                        lines.append(f"    {p.name}: {p.value} {p.unit_name}")
+                        name = friendly.get(p.name, p.name)
+                        lines.append(f"    {name}: {p.value} {p.unit_name}")
                 if hasattr(op, 'accuracy') and op.accuracy is not None and op.accuracy >= 0:
                     lines.append(f"    Accuracy: {op.accuracy} m")
         except AttributeError:
