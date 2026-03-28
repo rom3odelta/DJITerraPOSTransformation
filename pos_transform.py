@@ -141,6 +141,26 @@ def run_gui():
         # Otherwise treat the raw value as an EPSG code
         return val
 
+    def resolve_crs_name(epsg_code):
+        """Look up the official CRS name for an EPSG code."""
+        try:
+            crs = CRS.from_epsg(int(epsg_code))
+            return crs.name
+        except Exception:
+            return None
+
+    def on_crs_input(combo, label_var):
+        """When user types or selects in a CRS combo, resolve and display the CRS name."""
+        epsg = get_epsg(combo)
+        if not epsg:
+            label_var.set("")
+            return
+        name = resolve_crs_name(epsg)
+        if name:
+            label_var.set(f"\u2714 {name} (EPSG:{epsg})")
+        else:
+            label_var.set(f"\u2716 Unknown EPSG code: {epsg}")
+
     # ── File Browse ──────────────────────────────────────────────────────
 
     def browse_input():
@@ -300,13 +320,15 @@ def run_gui():
     frm_crs.pack(fill="x", padx=8, pady=4)
 
     preset_names = list(CRS_PRESETS.keys())
+    src_crs_name_var = tk.StringVar(value="\u2714 WGS 84 (EPSG:4326)")
+    dst_crs_name_var = tk.StringVar(value="\u2714 PRS92 / Philippines zone 3 (EPSG:3123)")
 
     # Source CRS
     ttk.Label(frm_crs, text="Source CRS:").grid(row=0, column=0, sticky="e", **PAD)
     src_combo = ttk.Combobox(frm_crs, values=preset_names, width=30)
     src_combo.set("WGS 84 (EPSG:4326)")
     src_combo.grid(row=0, column=1, sticky="w", **PAD)
-    ttk.Label(frm_crs, text="(select preset or type any EPSG code)").grid(
+    ttk.Label(frm_crs, textvariable=src_crs_name_var, foreground="#006600").grid(
         row=0, column=2, columnspan=2, sticky="w", **PAD
     )
 
@@ -315,9 +337,16 @@ def run_gui():
     dst_combo = ttk.Combobox(frm_crs, values=preset_names, width=30)
     dst_combo.set("PRS 92 Zone 3 (EPSG:3123)")
     dst_combo.grid(row=1, column=1, sticky="w", **PAD)
-    ttk.Label(frm_crs, text="(select preset or type any EPSG code)").grid(
+    ttk.Label(frm_crs, textvariable=dst_crs_name_var, foreground="#006600").grid(
         row=1, column=2, columnspan=2, sticky="w", **PAD
     )
+
+    src_combo.bind("<<ComboboxSelected>>", lambda e: on_crs_input(src_combo, src_crs_name_var))
+    src_combo.bind("<FocusOut>", lambda e: on_crs_input(src_combo, src_crs_name_var))
+    src_combo.bind("<Return>", lambda e: on_crs_input(src_combo, src_crs_name_var))
+    dst_combo.bind("<<ComboboxSelected>>", lambda e: on_crs_input(dst_combo, dst_crs_name_var))
+    dst_combo.bind("<FocusOut>", lambda e: on_crs_input(dst_combo, dst_crs_name_var))
+    dst_combo.bind("<Return>", lambda e: on_crs_input(dst_combo, dst_crs_name_var))
 
     # ── Row 2: GCP Delta ─────────────────────────────────────────────────
     frm_gcp = ttk.LabelFrame(root, text="Ground Control Point (GCP) Delta Translation", padding=6)
