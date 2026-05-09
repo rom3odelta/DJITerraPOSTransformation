@@ -9,9 +9,12 @@ This tool works in two modes:
 ### POS Transform Mode
 DJI Terra exports a POS CSV with each photo's geographic position (WGS 84 latitude/longitude) and orientation. This tool:
 
-1. **Transforms coordinates** from a source CRS (e.g. WGS 84) to a target projected CRS (e.g. PRS 92 Zone 1–5) using [pyproj](https://pyproj4.github.io/pyproj/).
-2. **Applies a GCP delta shift** — given a Ground Control Point with known source and target coordinates, computes the translation offset (dEasting, dNorthing, dElevation) and applies it to every photo position.
-3. **Exports a transformed POS CSV** ready to be imported back into DJI Terra or other photogrammetry software.
+1. **Loads a DJI flight folder** *(optional)* — point it at a raw DJI flight directory and it auto-fills:
+   - The base station coordinate (parsed from the `.RTB` RTCM3 stream, projected to your target CRS) into the GCP Source fields
+   - Per-photo POS rows (from `.MRK` PPK timestamps + JPG XMP gimbal metadata)
+2. **Transforms coordinates** from a source CRS (e.g. WGS 84) to a target projected CRS (e.g. PRS 92 Zone 1–5) using [pyproj](https://pyproj4.github.io/pyproj/).
+3. **Applies a GCP delta shift** — given a Ground Control Point with known source and target coordinates, computes the translation offset (dEasting, dNorthing, dElevation) and applies it to every photo position.
+4. **Exports a transformed POS CSV** ready to be imported back into DJI Terra or other photogrammetry software.
 
 ### Quick Transform Mode
 A generic coordinate transformer for any source/target EPSG pair:
@@ -71,41 +74,47 @@ The delta shift corrects for systematic offsets between the drone's GPS position
 
 ## Installation
 
-### Requirements
+### Pre-built Binaries (no Python required)
 
-- Python 3.8+
-- pyproj
+Download the latest binary for your OS from the [Releases page](https://github.com/rom3odelta/DJITerraPOSTransformation/releases):
+
+- **Windows** — `DJITerraPOSTransformation-windows.exe`
+- **macOS** — `DJITerraPOSTransformation-macos`
+- **Linux** — `DJITerraPOSTransformation-linux`
+
+On macOS/Linux you may need to make the binary executable first:
 
 ```bash
-pip install pyproj
+chmod +x DJITerraPOSTransformation-macos
 ```
 
-### Run
+### Run From Source
+
+Requirements: Python 3.8+
 
 ```bash
+pip install -r requirements.txt
 python pos_transform.py
 ```
 
-This opens the Tkinter GUI.
-
-### Build Executable
-
-To create a standalone `.exe` (no Python installation required on the target machine):
+### Build Your Own Executable
 
 ```bash
-pip install pyinstaller
+pip install -r requirements.txt
 python build.py
 ```
 
-The executable will be created at `dist/DJITerraPOSTransformation.exe`.
+The executable will be created in `dist/`.
 
 ## Usage
 
 ### POS Transform
 
-1. **Browse** — Select your DJI Terra POS CSV file.
+1. **Load input** — Either:
+   - **Browse** to a DJI Terra POS CSV file, **or**
+   - Click **Load DJI Folder...** to point at a raw DJI flight directory — the tool reads the `.RTB` base station file and per-photo `.MRK`/JPG metadata to fill the GCP Source fields and the input table automatically.
 2. **Select CRS** — Choose source (e.g. WGS 84) and target (e.g. PRS 92 Zone 3) from the dropdown presets, or type any EPSG code directly.
-3. **Enter GCP** *(optional)* — Fill in the GCP Source and Target coordinates, then click **Compute Delta** to see the offset values.
+3. **Enter GCP Target** — Fill in the surveyed/known GCP Target coordinates, then click **Compute Delta** to see the offset values. (GCP Source is filled automatically when loading a DJI folder.)
 4. **Transform** — Click to project all photo positions and apply the delta shift.
 5. **Export CSV** — Save the transformed POS file.
 
