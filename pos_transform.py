@@ -1,7 +1,9 @@
 import csv
+import glob
 import json
 import math
 import os
+import re
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinter import ttk
@@ -183,6 +185,200 @@ def save_settings(settings):
             json.dump(settings, f, indent=2)
     except OSError:
         pass
+
+
+# ── DJI Folder Loader ──────────────────────────────────────────────────────
+
+def _rtcm3_get_signed_bits(buf, start_bit, n_bits):
+    """Read n_bits MSB-first from buf, return as signed int."""
+    val = 0
+    for k in range(n_bits):
+        byte_idx = (start_bit + k) // 8
+        bit_idx = 7 - ((start_bit + k) % 8)
+        if byte_idx >= len(buf):
+            return None
+        val = (val << 1) | ((buf[byte_idx] >> bit_idx) & 1)
+    sign_bit = 1 << (n_bits - 1)
+    if val & sign_bit:
+        val -= 1 << n_bits
+    return val
+
+
+def parse_rtb_base_ecef(rtb_path):
+    """
+    Parse a DJI .RTB file (RTCM3 stream) and return the base station ARP as
+    ECEF (X, Y, Z) in meters from the first type 1005 or 1006 message.
+    Returns (x, y, z, antenna_height_m) or None if not found.
+    """
+    with open(rtb_path, "rb") as f:
+        data = f.read()
+    i = 0
+    while i < len(data) - 6:
+        if data[i] != 0xD3 or (data[i + 1] & 0xFC) != 0:
+            i += 1
+            continue
+        length = ((data[i + 1] & 0x03) << 8) | data[i + 2]
+        if length < 3 or i + 3 + length + 3 > len(data):
+            i += 1
+            continue
+        payload = data[i + 3 : i + 3 + length]
+        msg_type = (payload[0] << 4) | (payload[1] >> 4)
+        if msg_type in (1005, 1006):
+            # DF002..DF142: msg_type(12) ref_id(12) itrf(6) gps(1) glo(1) gal(1) ref_ind(1)
+            #               ECEF-X(38) osc(1) reserved(1) ECEF-Y(38) qcycle(2) ECEF-Z(38)
+            bit = 12 + 12 + 6 + 1 + 1 + 1 + 1
+            x = _rtcm3_get_signed_bits(payload, bit, 38); bit += 38
+            bit += 1 + 1
+            y = _rtcm3_get_signed_bits(payload, bit, 38); bit += 38
+            bit += 2
+            z = _rtcm3_get_signed_bits(payload, bit, 38); bit += 38
+            ant_h = 0.0
+            if msg_type == 1006:
+                ah = _rtcm3_get_signed_bits(payload, bit, 16)
+                if ah is not None:
+                    ant_h = ah * 0.0001
+            if x is not None and y is not None and z is not None:
+                return (x * 0.0001, y * 0.0001, z * 0.0001, ant_h)
+        i += 3 + length + 3
+    return None
+
+
+# Keys we pull out of DJI XMP. DJI literally spells the longitude key
+# "GpsLongtitude" — that typo is in the file format.
+_XMP_PATTERN = re.compile(
+    r'(drone-dji|tiff|exif):(\w+)\s*=\s*"([^"]*)"'
+)
+
+
+def parse_jpg_xmp(jpg_path):
+    """Extract DJI XMP fields from a JPG. Returns dict (string values) or {}."""
+    try:
+        with open(jpg_path, "rb") as f:
+            data = f.read(200000)  # XMP block lives well within first 200 KB
+    except OSError:
+        return {}
+    start = data.find(b"<x:xmpmeta")
+    end = data.find(b"</x:xmpmeta>")
+    if start == -1 or end == -1:
+        return {}
+    xmp = data[start : end + 12].decode("utf-8", errors="replace")
+    fields = {}
+    for m in _XMP_PATTERN.finditer(xmp):
+        fields[m.group(2)] = m.group(3)
+    return fields
+
+
+def parse_mrk_file(mrk_path):
+    """
+    Read a DJI .MRK timestamp file. Returns a list of dicts in file order:
+        {photo_no, lat, lon, ellh, sd_n, sd_e, sd_v, quality}
+    The .MRK is tab-separated; lat/lon/ellh come as 'value,Lat' / 'value,Lon' /
+    'value,Ellh' tokens.
+    """
+    rows = []
+    try:
+        with open(mrk_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = [p.strip() for p in line.split("\t") if p.strip()]
+                rec = {}
+                try:
+                    rec["photo_no"] = int(parts[0])
+                except (ValueError, IndexError):
+                    continue
+                for token in parts:
+                    if "," not in token:
+                        continue
+                    val, _, tag = token.partition(",")
+                    val, tag = val.strip(), tag.strip()
+                    try:
+                        v = float(val)
+                    except ValueError:
+                        continue
+                    if tag == "Lat":
+                        rec["lat"] = v
+                    elif tag == "Lon":
+                        rec["lon"] = v
+                    elif tag == "Ellh":
+                        rec["ellh"] = v
+                    elif tag == "Q":
+                        rec["quality"] = int(v)
+                # The 11th token is "sd_n, sd_e, sd_v" (comma+space separated).
+                # Fallback: scan for a token that looks like three comma+space floats.
+                for token in parts:
+                    if token.count(",") == 2 and "Lat" not in token and "Lon" not in token:
+                        try:
+                            sd_n, sd_e, sd_v = [float(x.strip()) for x in token.split(",")]
+                            rec["sd_n"], rec["sd_e"], rec["sd_v"] = sd_n, sd_e, sd_v
+                            break
+                        except ValueError:
+                            continue
+                if "lat" in rec and "lon" in rec:
+                    rows.append(rec)
+    except OSError:
+        return []
+    return rows
+
+
+def build_pos_rows_from_dji_folder(folder):
+    """
+    Walk a DJI flight folder and build POS rows for every JPG.
+    Position priority: .MRK (PPK-corrected) over JPG XMP (real-time RTK).
+    Yaw/Pitch/Roll come from JPG XMP gimbal angles.
+
+    Returns (pos_rows, source_used) where source_used is "MRK" or "XMP".
+    """
+    def _unique_ci(paths):
+        """Dedupe paths case-insensitively while keeping original casing."""
+        seen = {}
+        for p in paths:
+            seen.setdefault(os.path.normcase(p), p)
+        return sorted(seen.values())
+
+    jpgs = _unique_ci(glob.glob(os.path.join(folder, "*.JPG")) +
+                      glob.glob(os.path.join(folder, "*.jpg")))
+    mrk_files = _unique_ci(glob.glob(os.path.join(folder, "*.MRK")) +
+                           glob.glob(os.path.join(folder, "*.mrk")))
+
+    mrk_rows = parse_mrk_file(mrk_files[0]) if mrk_files else []
+    source_used = "MRK" if mrk_rows else "XMP"
+
+    def _flt(s, default=None):
+        try:
+            return float(str(s).lstrip("+"))
+        except (ValueError, AttributeError, TypeError):
+            return default
+
+    pos_rows = []
+    for idx, jpg in enumerate(jpgs):
+        xmp = parse_jpg_xmp(jpg)
+
+        # Position: prefer MRK by index alignment; fall back to XMP.
+        if idx < len(mrk_rows) and "lat" in mrk_rows[idx]:
+            lat = mrk_rows[idx]["lat"]
+            lon = mrk_rows[idx]["lon"]
+            alt = mrk_rows[idx].get("ellh", 0.0)
+        else:
+            lat = _flt(xmp.get("GpsLatitude"))
+            lon = _flt(xmp.get("GpsLongtitude"))
+            alt = _flt(xmp.get("AbsoluteAltitude"))
+            if lat is None or lon is None or alt is None:
+                continue
+
+        pos_rows.append({
+            "Photo Name": os.path.abspath(jpg),
+            "Latitude": f"{lat:.10f}",
+            "Longitude": f"{lon:.10f}",
+            "Altitude": f"{alt:.4f}",
+            "Yaw": _flt(xmp.get("GimbalYawDegree"), ""),
+            "Pitch": _flt(xmp.get("GimbalPitchDegree"), ""),
+            "Roll": _flt(xmp.get("GimbalRollDegree"), ""),
+            "Horizontal Accuracy": "0.03",
+            "Vertical Accuracy": "0.06",
+        })
+    return pos_rows, source_used
 
 
 # ── GUI ──────────────────────────────────────────────────────────────────────
@@ -430,6 +626,71 @@ def run_gui():
         except Exception as e:
             messagebox.showerror("Error", f"Failed to read POS CSV:\n{e}")
 
+    def load_dji_folder():
+        """Pick a DJI flight folder, auto-fill GCP Source from .RTB and POS rows from .MRK + JPGs."""
+        folder = filedialog.askdirectory(title="Select DJI flight folder (with .RTB / .MRK / .JPG)")
+        if not folder:
+            return
+
+        dst_epsg = get_epsg(dst_combo)
+        if not dst_epsg:
+            messagebox.showerror("Error", "Please select a Target CRS first.")
+            return
+
+        # 1) Base station coordinate from .RTB
+        seen_rtb = {}
+        for _p in (glob.glob(os.path.join(folder, "*.RTB")) +
+                   glob.glob(os.path.join(folder, "*.rtb"))):
+            seen_rtb.setdefault(os.path.normcase(_p), _p)
+        rtb_files = sorted(seen_rtb.values())
+        base_loaded = False
+        if rtb_files:
+            rtb = max(rtb_files, key=os.path.getsize)
+            try:
+                result = parse_rtb_base_ecef(rtb)
+            except Exception as e:
+                result = None
+                messagebox.showwarning("RTB parse error", f"Could not parse {os.path.basename(rtb)}:\n{e}")
+            if result:
+                ecef_x, ecef_y, ecef_z = result[0], result[1], result[2]
+                try:
+                    t = Transformer.from_crs("EPSG:4978", f"EPSG:{dst_epsg}", always_xy=True)
+                    e_proj, n_proj, h_proj = t.transform(ecef_x, ecef_y, ecef_z)
+                    for ent, val in (
+                        (gcp_src_e_entry, f"{e_proj:.4f}"),
+                        (gcp_src_n_entry, f"{n_proj:.4f}"),
+                        (gcp_src_elev_entry, f"{h_proj:.4f}"),
+                    ):
+                        ent.delete(0, "end")
+                        ent.insert(0, val)
+                    base_loaded = True
+                except Exception as e:
+                    messagebox.showwarning("Projection error",
+                                           f"Could not project base ECEF to EPSG:{dst_epsg}:\n{e}")
+
+        # 2) POS rows from .MRK + JPG XMP
+        try:
+            new_pos_rows, source_used = build_pos_rows_from_dji_folder(folder)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to read photos:\n{e}")
+            return
+
+        nonlocal pos_rows
+        pos_rows = new_pos_rows
+        input_path_var.set(folder)
+        populate_input_preview()
+        on_compute_delta()
+
+        msg = []
+        if base_loaded:
+            msg.append("base from .RTB")
+        elif rtb_files:
+            msg.append("no base in .RTB")
+        else:
+            msg.append("no .RTB found")
+        msg.append(f"{len(pos_rows)} photos ({source_used})")
+        status_var.set("Loaded DJI folder: " + ", ".join(msg))
+
     def populate_input_preview():
         for item in tree_input.get_children():
             tree_input.delete(item)
@@ -442,6 +703,8 @@ def run_gui():
                 row.get("Yaw", ""),
                 row.get("Pitch", ""),
                 row.get("Roll", ""),
+                row.get("Horizontal Accuracy", ""),
+                row.get("Vertical Accuracy", ""),
             ])
 
     # ── Compute Delta ────────────────────────────────────────────────────
@@ -602,6 +865,12 @@ def run_gui():
         row=0, column=1, columnspan=3, sticky="ew", **PAD
     )
     ttk.Button(frm_input, text="Browse...", command=browse_input).grid(row=0, column=4, **PAD)
+    load_dji_btn = ttk.Button(frm_input, text="Load DJI Folder...", command=load_dji_folder)
+    load_dji_btn.grid(row=0, column=5, **PAD)
+    ToolTip(load_dji_btn,
+            "Pick a DJI flight folder and auto-fill everything:\n"
+            "  • Base station coordinate (from .RTB) → GCP Source fields\n"
+            "  • Per-photo POS rows (from .MRK + JPG XMP) → input table")
     frm_input.columnconfigure(1, weight=1)
 
     # ── Row 1: CRS Selection ─────────────────────────────────────────────
@@ -909,12 +1178,13 @@ def run_gui():
               foreground="#555555", font=("Segoe UI", 9)).grid(
         row=0, column=0, sticky="w", padx=6, pady=(4, 2))
 
-    input_cols = ("Photo Name", "Latitude", "Longitude", "Altitude", "Yaw", "Pitch", "Roll")
+    input_cols = ("Photo Name", "Latitude", "Longitude", "Altitude",
+                  "Yaw", "Pitch", "Roll", "Horizontal Accuracy", "Vertical Accuracy")
     tree_input = ttk.Treeview(frm_tab_input, columns=input_cols, show="headings", height=11)
     for col in input_cols:
         tree_input.heading(col, text=col)
-        tree_input.column(col, width=110, anchor="center")
-    tree_input.column("Photo Name", width=200, anchor="w")
+        tree_input.column(col, width=110, anchor="center", stretch=False)
+    tree_input.column("Photo Name", width=520, anchor="w", stretch=False)
 
     sb_input_y = ttk.Scrollbar(frm_tab_input, orient="vertical", command=tree_input.yview)
     sb_input_x = ttk.Scrollbar(frm_tab_input, orient="horizontal", command=tree_input.xview)
@@ -939,8 +1209,8 @@ def run_gui():
     tree_output = ttk.Treeview(frm_tab_output, columns=output_cols, show="headings", height=11)
     for col in output_cols:
         tree_output.heading(col, text=col)
-        tree_output.column(col, width=110, anchor="center")
-    tree_output.column("Photo Name", width=200, anchor="w")
+        tree_output.column(col, width=110, anchor="center", stretch=False)
+    tree_output.column("Photo Name", width=520, anchor="w", stretch=False)
 
     sb_output_y = ttk.Scrollbar(frm_tab_output, orient="vertical", command=tree_output.yview)
     sb_output_x = ttk.Scrollbar(frm_tab_output, orient="horizontal", command=tree_output.xview)
