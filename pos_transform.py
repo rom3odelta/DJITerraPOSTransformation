@@ -1,9 +1,13 @@
 import csv
+import json
+import math
 import os
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinter import ttk
 from pyproj import Transformer, CRS
+from pyproj.database import query_crs_info
+from pyproj.enums import PJType
 
 # ── CRS Presets ──────────────────────────────────────────────────────────────
 # Friendly name → EPSG code. Users can also type any EPSG code directly.
@@ -51,19 +55,42 @@ def transform_point(transformer, lon, lat):
 
 # ── GCP Delta Computation ────────────────────────────────────────────────────
 
-def compute_gcp_delta(gcp_src_easting, gcp_src_northing, gcp_src_elev,
-                       gcp_tgt_easting, gcp_tgt_northing, gcp_tgt_elev):
+def compute_pole_vertical_offset(height, radius=0.0, mode="vertical"):
     """
-    Compute the translation delta from a single GCP pair.
-    Both source and target are in projected coordinates (Easting, Northing, Elevation).
+    Vertical distance (m) from ground mark to GNSS receiver.
 
-    Delta = target_known - source.
+    Vertical mode: height is used as-is (user-entered total vertical distance).
+    Slant mode:    height is the slant distance and radius is the receiver's
+                   horizontal radius; returns sqrt(height² - radius²).
+    """
+    if mode == "slant":
+        if height <= radius:
+            raise ValueError("Slant height must be greater than the receiver radius.")
+        return math.sqrt(height ** 2 - radius ** 2)
+    else:
+        return height
+
+
+def compute_gcp_delta(gcp_src_easting, gcp_src_northing, gcp_src_elev,
+                       gcp_tgt_easting, gcp_tgt_northing, gcp_tgt_elev,
+                       rod_height=0.0, radius=0.0, rod_mode="vertical"):
+    """
+    Translation delta from a single GCP pair (projected coords).
+
+    The pole vertical offset is subtracted from the source elevation to bring
+    it down to the ground mark before differencing against the known target.
+
+        ground_source_elev = gcp_src_elev - height                   [vertical mode]
+        ground_source_elev = gcp_src_elev - sqrt(slant² - radius²)   [slant mode]
 
     Returns (dE, dN, dZ).
     """
+    pole_vertical = compute_pole_vertical_offset(rod_height, radius, rod_mode) \
+        if (rod_height or radius) else 0.0
+
     dE = gcp_tgt_easting - gcp_src_easting
     dN = gcp_tgt_northing - gcp_src_northing
-    dZ = gcp_tgt_elev - gcp_src_elev
+    dZ = gcp_tgt_elev - (gcp_src_elev - pole_vertical)
     return dE, dN, dZ
 
 
@@ -111,9 +138,9 @@ def transform_pos_data(pos_rows, src_epsg, dst_epsg, dE=0.0, dN=0.0, dZ=0.0):
 
         results.append({
             "Photo Name": row["Photo Name"],
-            "Easting": f"{easting:.4f}",
-            "Northing": f"{northing:.4f}",
-            "Elevation": f"{elevation:.4f}",
+            "Easting": f"{easting:.10f}",
+            "Northing": f"{northing:.10f}",
+            "Elevation": f"{elevation:.10f}",
             "Yaw": row["Yaw"],
             "Pitch": row["Pitch"],
             "Roll": row["Roll"],
@@ -123,12 +150,74 @@ def transform_pos_data(pos_rows, src_epsg, dst_epsg, dE=0.0, dN=0.0, dZ=0.0):
     return results
 
 
+# ── Settings Persistence ────────────────────────────────────────────────────
+
+SETTINGS_PATH = os.path.join(
+    os.path.expanduser("~"), ".dji_terra_pos_transform", "settings.json"
+)
+
+DEFAULT_SETTINGS = {
+    "src_crs": "WGS 84 (EPSG:4326)",
+    "dst_crs": "PRS 92 Zone 3 (EPSG:3123)",
+    "rod_height": "1.83915",
+    "rod_mode": "vertical",
+    "radius": "",
+}
+
+
+def load_settings():
+    """Read saved user preferences. Falls back to defaults on any failure."""
+    try:
+        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return {**DEFAULT_SETTINGS, **data}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return dict(DEFAULT_SETTINGS)
+
+
+def save_settings(settings):
+    """Persist user preferences. Silently ignores write failures."""
+    try:
+        os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
+        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+    except OSError:
+        pass
+
+
 # ── GUI ──────────────────────────────────────────────────────────────────────
+
+class ToolTip:
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tip_window = None
+        widget.bind("<Enter>", self.show)
+        widget.bind("<Leave>", self.hide)
+
+    def show(self, _event=None):
+        if self.tip_window:
+            return
+        x = self.widget.winfo_rootx() + 20
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        self.tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        ttk.Label(tw, text=self.text, background="#ffffe0",
+                  relief="solid", borderwidth=1,
+                  font=("Segoe UI", 9)).pack(ipadx=6, ipady=3)
+
+    def hide(self, _event=None):
+        if self.tip_window:
+            self.tip_window.destroy()
+            self.tip_window = None
+
 
 def run_gui():
     pos_rows = []       # raw input rows
     result_rows = []    # transformed output rows
     delta_vals = [0.0, 0.0, 0.0]  # dE, dN, dZ
+    settings = load_settings()
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -140,6 +229,102 @@ def run_gui():
             return CRS_PRESETS[val]
         # Otherwise treat the raw value as an EPSG code
         return val
+
+    def open_crs_browser(combo, label_var):
+        """Pop a searchable CRS picker that queries the pyproj database."""
+        win = tk.Toplevel(root)
+        win.title("Browse Coordinate Reference Systems")
+        win.geometry("720x520")
+        win.transient(root)
+
+        ttk.Label(win, text="Search (name, authority, area, or EPSG code):").pack(
+            anchor="w", padx=8, pady=(8, 2)
+        )
+        search_var = tk.StringVar()
+        entry = ttk.Entry(win, textvariable=search_var)
+        entry.pack(fill="x", padx=8, pady=(0, 4))
+
+        type_var = tk.StringVar(value="All")
+        type_frame = ttk.Frame(win)
+        type_frame.pack(fill="x", padx=8, pady=(0, 4))
+        ttk.Label(type_frame, text="Type:").pack(side="left")
+        for t in ("All", "Geographic", "Projected"):
+            ttk.Radiobutton(type_frame, text=t, value=t, variable=type_var,
+                            command=lambda: refresh()).pack(side="left", padx=4)
+
+        cols = ("EPSG", "Name", "Type", "Area")
+        tree = ttk.Treeview(win, columns=cols, show="headings", height=18)
+        tree.heading("EPSG", text="EPSG")
+        tree.heading("Name", text="Name")
+        tree.heading("Type", text="Type")
+        tree.heading("Area", text="Area of Use")
+        tree.column("EPSG", width=80, anchor="center")
+        tree.column("Name", width=300, anchor="w")
+        tree.column("Type", width=90, anchor="center")
+        tree.column("Area", width=220, anchor="w")
+
+        sb = ttk.Scrollbar(win, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=4)
+        sb.pack(side="left", fill="y", padx=(0, 8), pady=4)
+
+        # Cache the full EPSG list once — querying is somewhat slow
+        cache = {"geographic": None, "projected": None}
+
+        def get_list(which):
+            if cache[which] is not None:
+                return cache[which]
+            pj_type = PJType.GEOGRAPHIC_2D_CRS if which == "geographic" else PJType.PROJECTED_CRS
+            try:
+                infos = query_crs_info(auth_name="EPSG", pj_types=pj_type)
+            except Exception:
+                infos = []
+            cache[which] = infos
+            return infos
+
+        def refresh(*_):
+            q = search_var.get().strip().lower()
+            t = type_var.get()
+            tree.delete(*tree.get_children())
+            items = []
+            if t in ("All", "Geographic"):
+                items += [(i, "Geographic") for i in get_list("geographic")]
+            if t in ("All", "Projected"):
+                items += [(i, "Projected") for i in get_list("projected")]
+            count = 0
+            for info, kind in items:
+                code = info.code
+                name = info.name
+                area = (info.area_of_use.name if info.area_of_use else "")
+                if q:
+                    haystack = f"{code} {name} {area}".lower()
+                    if q not in haystack:
+                        continue
+                tree.insert("", "end", values=(code, name, kind, area))
+                count += 1
+                if count >= 500:  # cap UI rows
+                    break
+            win.title(f"Browse Coordinate Reference Systems  —  {count} match(es)"
+                     + (" (showing first 500)" if count >= 500 else ""))
+
+        search_var.trace_add("write", lambda *_: refresh())
+
+        def select_and_close(*_):
+            sel = tree.selection()
+            if not sel:
+                return
+            vals = tree.item(sel[0], "values")
+            epsg = vals[0]
+            combo.set(str(epsg))
+            on_crs_input(combo, label_var)
+            win.destroy()
+
+        ttk.Button(win, text="Select", command=select_and_close).pack(
+            side="bottom", pady=(0, 8)
+        )
+        tree.bind("<Double-1>", select_and_close)
+        entry.focus_set()
+        refresh()
 
     def resolve_crs_name(epsg_code):
         """Look up the official CRS name for an EPSG code."""
@@ -261,11 +446,10 @@ def run_gui():
 
     # ── Compute Delta ────────────────────────────────────────────────────
 
-    def on_compute_delta():
+    def on_compute_delta(*_args):
         src_epsg = get_epsg(src_combo)
         dst_epsg = get_epsg(dst_combo)
         if not src_epsg or not dst_epsg:
-            messagebox.showerror("Error", "Please select source and target CRS.")
             return
         try:
             gcp_src_e = float(gcp_src_e_entry.get())
@@ -275,23 +459,47 @@ def run_gui():
             gcp_tgt_n = float(gcp_tgt_n_entry.get())
             gcp_tgt_elev = float(gcp_tgt_elev_entry.get())
         except ValueError:
-            messagebox.showerror("Error", "All GCP fields must be valid numbers.")
+            # Not all fields valid yet — silently skip auto-compute
+            delta_e_var.set("")
+            delta_n_var.set("")
+            delta_z_var.set("")
+            return
+
+        try:
+            rod = float(rod_height_var.get() or 0)
+            radius = float(radius_var.get() or 0)
+        except ValueError:
+            rod, radius = 0.0, 0.0
+        mode = rod_mode_var.get() or "vertical"
+
+        if mode == "slant" and radius <= 0:
+            delta_e_var.set("")
+            delta_n_var.set("")
+            delta_z_var.set("")
             return
 
         try:
             dE, dN, dZ = compute_gcp_delta(
                 gcp_src_e, gcp_src_n, gcp_src_elev,
-                gcp_tgt_e, gcp_tgt_n, gcp_tgt_elev
+                gcp_tgt_e, gcp_tgt_n, gcp_tgt_elev,
+                rod_height=rod, radius=radius, rod_mode=mode
             )
         except Exception as e:
-            messagebox.showerror("Error", f"Delta computation failed:\n{e}")
+            status_var.set(f"Delta computation error: {e}")
             return
 
         delta_vals[0], delta_vals[1], delta_vals[2] = dE, dN, dZ
-        delta_e_var.set(f"{dE:.4f}")
-        delta_n_var.set(f"{dN:.4f}")
-        delta_z_var.set(f"{dZ:.4f}")
-        status_var.set(f"Delta computed: dE={dE:.4f}  dN={dN:.4f}  dZ={dZ:.4f}")
+        delta_e_var.set(f"{dE:.10f}")
+        delta_n_var.set(f"{dN:.10f}")
+        delta_z_var.set(f"{dZ:.10f}")
+        try:
+            pole = compute_pole_vertical_offset(rod, radius, mode) if (rod or radius) else 0.0
+            status_var.set(
+                f"Delta auto-computed: dE={dE:.4f}  dN={dN:.4f}  dZ={dZ:.4f}  "
+                f"(vertical offset = {pole:.4f} m, mode={mode})"
+            )
+        except Exception:
+            status_var.set(f"Delta auto-computed: dE={dE:.4f}  dN={dN:.4f}  dZ={dZ:.4f}")
 
     # ── Transform ────────────────────────────────────────────────────────
 
@@ -316,6 +524,18 @@ def run_gui():
 
         populate_output_table()
         status_var.set(f"Transformed {len(result_rows)} photos successfully.")
+        messagebox.showinfo(
+            "Transformation Successful",
+            f"Successfully transformed {len(result_rows)} photo positions.\n\n"
+            f"Source CRS: EPSG:{src_epsg}\n"
+            f"Target CRS: EPSG:{dst_epsg}\n\n"
+            f"GCP Delta applied:\n"
+            f"  dE = {delta_vals[0]:.4f} m\n"
+            f"  dN = {delta_vals[1]:.4f} m\n"
+            f"  dZ = {delta_vals[2]:.4f} m\n\n"
+            f"Switch to the 'Transformed Output' tab to review,\n"
+            f"then click 'Export CSV...' to save."
+        )
 
     def populate_output_table():
         for item in tree_output.get_children():
@@ -366,6 +586,9 @@ def run_gui():
     delta_e_var = tk.StringVar(value="0.0000")
     delta_n_var = tk.StringVar(value="0.0000")
     delta_z_var = tk.StringVar(value="0.0000")
+    rod_height_var = tk.StringVar(value=settings["rod_height"])
+    radius_var = tk.StringVar(value=settings["radius"])
+    rod_mode_var = tk.StringVar(value=settings["rod_mode"])
     status_var = tk.StringVar(value="Ready")
 
     PAD = {"padx": 6, "pady": 3}
@@ -386,25 +609,31 @@ def run_gui():
     frm_crs.pack(fill="x", padx=8, pady=4)
 
     preset_names = list(CRS_PRESETS.keys())
-    src_crs_name_var = tk.StringVar(value="\u2714 WGS 84 (EPSG:4326)")
-    dst_crs_name_var = tk.StringVar(value="\u2714 PRS92 / Philippines zone 3 (EPSG:3123)")
+    src_crs_name_var = tk.StringVar()
+    dst_crs_name_var = tk.StringVar()
 
     # Source CRS
     ttk.Label(frm_crs, text="Source CRS:").grid(row=0, column=0, sticky="e", **PAD)
     src_combo = ttk.Combobox(frm_crs, values=preset_names, width=30)
-    src_combo.set("WGS 84 (EPSG:4326)")
+    src_combo.set(settings["src_crs"])
     src_combo.grid(row=0, column=1, sticky="w", **PAD)
+    ttk.Button(frm_crs, text="…", width=3,
+               command=lambda: open_crs_browser(src_combo, src_crs_name_var)).grid(
+        row=0, column=2, sticky="w", padx=(0, 6))
     ttk.Label(frm_crs, textvariable=src_crs_name_var, foreground="#006600").grid(
-        row=0, column=2, columnspan=2, sticky="w", **PAD
+        row=0, column=3, columnspan=2, sticky="w", **PAD
     )
 
     # Target CRS
     ttk.Label(frm_crs, text="Target CRS:").grid(row=1, column=0, sticky="e", **PAD)
     dst_combo = ttk.Combobox(frm_crs, values=preset_names, width=30)
-    dst_combo.set("PRS 92 Zone 3 (EPSG:3123)")
+    dst_combo.set(settings["dst_crs"])
     dst_combo.grid(row=1, column=1, sticky="w", **PAD)
+    ttk.Button(frm_crs, text="…", width=3,
+               command=lambda: open_crs_browser(dst_combo, dst_crs_name_var)).grid(
+        row=1, column=2, sticky="w", padx=(0, 6))
     ttk.Label(frm_crs, textvariable=dst_crs_name_var, foreground="#006600").grid(
-        row=1, column=2, columnspan=2, sticky="w", **PAD
+        row=1, column=3, columnspan=2, sticky="w", **PAD
     )
 
     src_combo.bind("<<ComboboxSelected>>", lambda e: on_crs_input(src_combo, src_crs_name_var))
@@ -443,46 +672,115 @@ def run_gui():
     ttk.Label(frm_gcp, text="GCP Source (from POS / transformed):").grid(
         row=0, column=0, columnspan=6, sticky="w", **PAD
     )
-    ttk.Label(frm_gcp, text="Northing:").grid(row=1, column=0, sticky="e", **PAD)
-    gcp_src_n_entry = ttk.Entry(frm_gcp, width=18)
-    gcp_src_n_entry.grid(row=1, column=1, sticky="w", **PAD)
-    ttk.Label(frm_gcp, text="Easting:").grid(row=1, column=2, sticky="e", **PAD)
+    ttk.Label(frm_gcp, text="Easting:").grid(row=1, column=0, sticky="e", **PAD)
     gcp_src_e_entry = ttk.Entry(frm_gcp, width=18)
-    gcp_src_e_entry.grid(row=1, column=3, sticky="w", **PAD)
+    gcp_src_e_entry.grid(row=1, column=1, sticky="w", **PAD)
+    ttk.Label(frm_gcp, text="Northing:").grid(row=1, column=2, sticky="e", **PAD)
+    gcp_src_n_entry = ttk.Entry(frm_gcp, width=18)
+    gcp_src_n_entry.grid(row=1, column=3, sticky="w", **PAD)
     ttk.Label(frm_gcp, text="Elevation:").grid(row=1, column=4, sticky="e", **PAD)
     gcp_src_elev_entry = ttk.Entry(frm_gcp, width=18)
     gcp_src_elev_entry.grid(row=1, column=5, sticky="w", **PAD)
 
     # GCP Target
-    ttk.Label(frm_gcp, text="GCP Target (surveyed / known):").grid(
-        row=2, column=0, columnspan=6, sticky="w", **PAD
-    )
-    ttk.Label(frm_gcp, text="Northing:").grid(row=3, column=0, sticky="e", **PAD)
-    gcp_tgt_n_entry = ttk.Entry(frm_gcp, width=18)
-    gcp_tgt_n_entry.grid(row=3, column=1, sticky="w", **PAD)
-    ttk.Label(frm_gcp, text="Easting:").grid(row=3, column=2, sticky="e", **PAD)
+    gcp_tgt_lbl = ttk.Label(frm_gcp, text="GCP Target (ground coordinates)  ℹ")
+    gcp_tgt_lbl.grid(row=2, column=0, columnspan=6, sticky="w", **PAD)
+    ToolTip(gcp_tgt_lbl,
+            "Enter the known ground-level coordinates (e.g. from a benchmark or control point).\n"
+            "The vertical offset (from your height entry and chosen mode) will be subtracted\n"
+            "from the GCP Source elevation to bring it down to ground level before computing the delta.")
+    ttk.Label(frm_gcp, text="Easting:").grid(row=3, column=0, sticky="e", **PAD)
     gcp_tgt_e_entry = ttk.Entry(frm_gcp, width=18)
-    gcp_tgt_e_entry.grid(row=3, column=3, sticky="w", **PAD)
+    gcp_tgt_e_entry.grid(row=3, column=1, sticky="w", **PAD)
+    ttk.Label(frm_gcp, text="Northing:").grid(row=3, column=2, sticky="e", **PAD)
+    gcp_tgt_n_entry = ttk.Entry(frm_gcp, width=18)
+    gcp_tgt_n_entry.grid(row=3, column=3, sticky="w", **PAD)
     ttk.Label(frm_gcp, text="Elevation:").grid(row=3, column=4, sticky="e", **PAD)
     gcp_tgt_elev_entry = ttk.Entry(frm_gcp, width=18)
     gcp_tgt_elev_entry.grid(row=3, column=5, sticky="w", **PAD)
 
-    # Compute Delta button + display
-    ttk.Button(frm_gcp, text="Compute Delta", command=on_compute_delta).grid(
-        row=4, column=0, columnspan=2, **PAD
-    )
-    ttk.Label(frm_gcp, text="dE:").grid(row=4, column=2, sticky="e", **PAD)
-    ttk.Entry(frm_gcp, textvariable=delta_e_var, width=14, state="readonly").grid(
-        row=4, column=3, sticky="w", **PAD
-    )
-    ttk.Label(frm_gcp, text="dN:").grid(row=5, column=2, sticky="e", **PAD)
-    ttk.Entry(frm_gcp, textvariable=delta_n_var, width=14, state="readonly").grid(
+    # Height input + mode radio. Receiver radius input is shown only in slant mode.
+    rod_height_label_var = tk.StringVar(value="Vertical Height:")
+    ttk.Label(frm_gcp, textvariable=rod_height_label_var).grid(row=4, column=0, sticky="e", **PAD)
+    rod_height_entry = ttk.Entry(frm_gcp, width=18, textvariable=rod_height_var)
+    rod_height_entry.grid(row=4, column=1, sticky="w", **PAD)
+
+    rod_mode_frame = ttk.Frame(frm_gcp)
+    rod_mode_frame.grid(row=4, column=2, columnspan=2, sticky="w", **PAD)
+
+    radius_label = ttk.Label(frm_gcp, text="Receiver Radius:")
+    radius_entry = ttk.Entry(frm_gcp, width=18, textvariable=radius_var)
+    radius_label.grid(row=4, column=4, sticky="e", **PAD)
+    radius_entry.grid(row=4, column=5, sticky="w", **PAD)
+    radius_label.grid_remove()
+    radius_entry.grid_remove()
+
+    def on_mode_change():
+        if rod_mode_var.get() == "slant":
+            rod_height_label_var.set("Slant Height:")
+            radius_label.grid()
+            radius_entry.grid()
+        else:
+            rod_height_label_var.set("Vertical Height:")
+            radius_label.grid_remove()
+            radius_entry.grid_remove()
+        on_compute_delta()
+
+    ttk.Radiobutton(rod_mode_frame, text="Vertical", value="vertical",
+                    variable=rod_mode_var,
+                    command=on_mode_change).pack(side="left")
+    ttk.Radiobutton(rod_mode_frame, text="Slant", value="slant",
+                    variable=rod_mode_var,
+                    command=on_mode_change).pack(side="left", padx=(6, 0))
+
+    # Delta display (auto-computed)
+    ttk.Label(frm_gcp, text="Delta (auto):",
+              font=("Segoe UI", 9, "bold")).grid(row=5, column=0, sticky="e", **PAD)
+    ttk.Label(frm_gcp, text="dE:").grid(row=5, column=2, sticky="e", **PAD)
+    ttk.Entry(frm_gcp, textvariable=delta_e_var, width=22, state="readonly").grid(
         row=5, column=3, sticky="w", **PAD
     )
-    ttk.Label(frm_gcp, text="dZ:").grid(row=4, column=4, sticky="e", **PAD)
-    ttk.Entry(frm_gcp, textvariable=delta_z_var, width=14, state="readonly").grid(
-        row=4, column=5, sticky="w", **PAD
+    ttk.Label(frm_gcp, text="dN:").grid(row=6, column=2, sticky="e", **PAD)
+    ttk.Entry(frm_gcp, textvariable=delta_n_var, width=22, state="readonly").grid(
+        row=6, column=3, sticky="w", **PAD
     )
+    ttk.Label(frm_gcp, text="dZ:").grid(row=5, column=4, sticky="e", **PAD)
+    ttk.Entry(frm_gcp, textvariable=delta_z_var, width=22, state="readonly").grid(
+        row=5, column=5, sticky="w", **PAD
+    )
+
+    # Wire auto-compute on every keystroke in any GCP / height / radius field
+    for _entry in (gcp_src_n_entry, gcp_src_e_entry, gcp_src_elev_entry,
+                   gcp_tgt_n_entry, gcp_tgt_e_entry, gcp_tgt_elev_entry,
+                   rod_height_entry, radius_entry):
+        _entry.bind("<KeyRelease>", on_compute_delta)
+        _entry.bind("<FocusOut>", on_compute_delta)
+
+    # Excel paste: pasting tab-separated E/N/Z into any field fills all three
+    def make_gcp_paste_handler(e_ent, n_ent, z_ent):
+        def handler(_event):
+            try:
+                clip = root.clipboard_get()
+            except tk.TclError:
+                return
+            clip = clip.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n").strip()
+            parts = [p.strip() for p in clip.replace(",", "\t").split("\t") if p.strip()]
+            if len(parts) >= 3:
+                for ent, val in zip((e_ent, n_ent, z_ent), parts[:3]):
+                    ent.delete(0, "end")
+                    ent.insert(0, val)
+                on_compute_delta()
+                return "break"
+        return handler
+
+    for _e, _n, _z in (
+        (gcp_src_e_entry, gcp_src_n_entry, gcp_src_elev_entry),
+        (gcp_tgt_e_entry, gcp_tgt_n_entry, gcp_tgt_elev_entry),
+    ):
+        _h = make_gcp_paste_handler(_e, _n, _z)
+        for _ent in (_e, _n, _z):
+            _ent.bind("<Control-v>", _h)
+            _ent.bind("<Control-V>", _h)
 
     # ── Row 3: Action Buttons ────────────────────────────────────────────
     frm_actions = ttk.Frame(root, padding=4)
@@ -550,7 +848,7 @@ def run_gui():
                 x_out, y_out = transformer.transform(x_in, y_in)
             row = (i, f"{x_in}", f"{y_in}",
                    f"{z_in}" if z_in is not None else "",
-                   f"{x_out:.6f}", f"{y_out:.6f}",
+                   f"{x_out:.10f}", f"{y_out:.10f}",
                    f"{z_in}" if z_in is not None else "")
             quick_result_rows.append(row)
             tree_quick.insert("", "end", values=row)
@@ -722,8 +1020,23 @@ def run_gui():
         fill="x", side="bottom", padx=8, pady=(0, 4)
     )
 
-    # Populate transformation parameters on startup
+    # Apply loaded settings: refresh CRS labels, show/hide radius field
+    on_crs_input(src_combo, src_crs_name_var)
+    on_crs_input(dst_combo, dst_crs_name_var)
+    on_mode_change()
     update_transform_params()
+
+    def on_close():
+        save_settings({
+            "src_crs": src_combo.get(),
+            "dst_crs": dst_combo.get(),
+            "rod_height": rod_height_var.get(),
+            "rod_mode": rod_mode_var.get(),
+            "radius": radius_var.get(),
+        })
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
 
     root.mainloop()
 
